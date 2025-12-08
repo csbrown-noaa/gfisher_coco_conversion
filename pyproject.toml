@@ -12,7 +12,8 @@ authors = [
 dependencies = [
   "viame2coco",
   "pycocowriter",
-  "pycocotools"
+  "pycocotools",
+  "pynoddgcs"
 ]
 readme = "README.md"
 classifiers = [
