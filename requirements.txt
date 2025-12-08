@@ -1,3 +1,5 @@
-mkdocs
-mkdocs-material
-mkdocstrings[python]
+viame2coco
+pycocowriter
+pycocotools
+pynoddgcs
+google-cloud-storage

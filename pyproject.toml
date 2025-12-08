@@ -3,15 +3,25 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = TODO: pick a project name
+name = "gfisher_coco_conversion"
 version = "0.1.0"
-description = TODO: input a project description
+description = "tools for converting gfisher data formats"
 authors = [
-    { name = TODO: your name here },
+    { name = "CScott Brown" },
 ]
 dependencies = [
+  "viame2coco",
+  "pycocowriter",
+  "pycocotools"
 ]
 readme = "README.md"
 classifiers = [
     "Programming Language :: Python :: 3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mkdocs",
+  "mkdocs-material",
+  "mkdocstrings[python]"
 ]
