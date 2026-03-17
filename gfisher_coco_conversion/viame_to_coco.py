@@ -136,45 +136,67 @@ def pair_csv_and_videos(files):
     return pairs
 
 
-def load_completed_videos(filepath):
+def get_completed_from_gcs(bucket, directory):
     """
-    Loads the set of successfully processed video root names from a CSV file.
+    Scans the destination GCS bucket for existing annotation files.
 
     Parameters
     ----------
-    filepath : str
-        Path to the local tracking CSV file.
+    bucket : str
+        The destination GCS bucket.
+    directory : str
+        The destination directory path.
 
     Returns
     -------
     set
-        A set of completed video root names.
+        A set of video root names that already have an annotations.json file.
     """
-    completed = set()
+    base_path = directory if directory.endswith('/') else f"{directory}/"
+    gcs_path = f"gs://{bucket}/{base_path}**/annotations.json"
+    logging.info("Checking GCS for existing completed datasets in %s...", gcs_path)
+    
     try:
-        with open(filepath, 'r') as f:
-            reader = csv.reader(f)
-            completed = {row[0] for row in reader if row}
-    except FileNotFoundError:
-        logging.info("Tracking file '%s' not found. A new one will be created.", filepath)
-        
-    return completed
+        result = subprocess.run(
+            ["gsutil", "ls", gcs_path],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        completed = set()
+        for line in result.stdout.split("\n"):
+            line = line.strip()
+            if line:
+                # Extracts 'video_root_name' from 'gs://bucket/dir/video_root_name/annotations.json'
+                parts = line.split('/')
+                if len(parts) >= 2:
+                    completed.add(parts[-2])
+        return completed
+    except subprocess.CalledProcessError as e:
+        # gsutil returns an error if no objects match the wildcard (e.g., an empty destination)
+        if "matched no objects" in e.stderr or e.returncode == 1:
+            logging.info("No existing datasets found in destination.")
+            return set()
+        logging.error("Failed to check existing datasets using gsutil: %s", e.stderr)
+        raise
 
 
-def append_completed_video(filepath, video_root_name):
+def get_video_roots_from_list(list_file):
     """
-    Appends a successfully processed video root name to the tracking CSV.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the local tracking CSV file.
-    video_root_name : str
-        The root name of the video that was successfully processed.
+    Reads a newline-delimited list of video root names from a file.
     """
-    with open(filepath, 'a', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow([video_root_name])
+    logging.info("Reading target videos from %s...", list_file)
+    roots = set()
+    try:
+        with open(list_file, 'r') as f:
+            for line in f:
+                root = line.strip()
+                if root:
+                    roots.add(root)
+    except Exception as e:
+        logging.error("Failed to read input list: %s", e)
+        raise
+    return roots
 
 
 def process_video_pair(
@@ -286,9 +308,15 @@ Examples:
     parser.add_argument("--dest-dir", required=True, help="Directory path within the destination bucket")
     
     parser.add_argument(
-        "--tracking-csv", 
-        default="completed_videos.csv", 
-        help="Local CSV file path to track successfully processed videos."
+        "--input-list", 
+        default=None, 
+        help="Path to a text file containing a newline-delimited list of video root names to process."
+    )
+    
+    parser.add_argument(
+        "--overwrite", 
+        action="store_true", 
+        help="If set, forces conversion of all matched pairs even if they already exist in the destination."
     )
     
     parser.add_argument(
@@ -328,7 +356,23 @@ def main():
     pairs = pair_csv_and_videos(files)
     logging.info("Discovered %d matched CSV/Video pairs.", len(pairs))
 
-    completed = load_completed_videos(args.tracking_csv)
+    # Filter by input list if provided
+    if args.input_list:
+        try:
+            target_roots = get_video_roots_from_list(args.input_list)
+            pairs = {k: v for k, v in pairs.items() if k in target_roots}
+            logging.info("Filtered down to %d pairs based on input list.", len(pairs))
+        except Exception:
+            logging.critical("Failed to process input list. Exiting.")
+            return
+
+    # Check for already completed videos unless --overwrite is set
+    completed = set()
+    if not args.overwrite:
+        completed = get_completed_from_gcs(args.dest_bucket, args.dest_dir)
+        logging.info("Found %d already completed datasets in GCS.", len(completed))
+    else:
+        logging.info("--overwrite flag set. Skipping GCS completion check.")
     
     # Pre-add explicitly skipped files so they bypass processing
     if args.skip:
@@ -357,9 +401,6 @@ def main():
                 client=client
             )
             
-            # Immediately record the success to ensure progress isn't lost on early exit
-            completed.add(video_root_name)
-            append_completed_video(args.tracking_csv, video_root_name)
             logging.info("Successfully finished %s.", video_root_name)
 
         except KeyboardInterrupt:
@@ -367,9 +408,8 @@ def main():
             failed.append(video_root_name)
             break
         except Exception as e:
-            logging.error("Unhandled exception processing %s: %s", video_root_name, e)
+            logging.exception("Unhandled exception processing %s:", video_root_name)
             failed.append(video_root_name)
-            raise e
 
     # Final Summary
     successful_count = len(to_do) - len(failed)
